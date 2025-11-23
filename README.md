@@ -2,6 +2,9 @@
 
 一个面向 Flymd 的外置插件，用来把当前文档发布到 [Halo](https://github.com/halo-dev/halo) 并保持与远端同步。
 
+致谢：[halo-sigs/obsidian-halo : Obsidian 发布插件，支持发布、更新文档到 Halo](https://github.com/halo-sigs/obsidian-halo)
+
+
 ## 功能
 
 - 通过菜单快速发布当前文档到任意 Halo 站点
