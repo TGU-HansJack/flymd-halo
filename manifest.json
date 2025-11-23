@@ -1,0 +1,9 @@
+{
+  "id": "flymd-halo",
+  "name": "Halo Publisher",
+  "version": "0.1.0",
+  "author": "Flymd Contributors",
+  "description": "将当前文档发布或更新到 Halo。",
+  "main": "main.js",
+  "minHostVersion": "0.3.5"
+}
