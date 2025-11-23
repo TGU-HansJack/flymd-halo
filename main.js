@@ -60,8 +60,12 @@ export function deactivate() {
 }
 
 export async function openSettings(context) {
-  state.settings = await loadSettings(context);
-  await settingsPrompt(context, state.settings);
+  const current = await loadSettings(context);
+  const updated = await showSettingsModal(current);
+  if (!updated) {
+    return;
+  }
+  state.settings = updated;
   await saveSettings(context, state.settings);
   safeNotice(context, 'Halo 配置已更新', 'ok');
 }
@@ -326,134 +330,6 @@ function normalizeSite(raw) {
   };
 }
 
-async function settingsPrompt(context, settings) {
-  let exit = false;
-  while (!exit) {
-    const summary = formatSettingsSummary(settings);
-    const answer = prompt(`${summary}\n\n请选择操作：\n1) 新增站点\n2) 编辑站点\n3) 删除站点\n4) 设置默认站点\n5) 切换默认发布状态（当前：${settings.publishByDefault ? '自动发布' : '草稿'}）\n0) 完成`, '0');
-    if (answer === null || answer.trim() === '0') {
-      exit = true;
-      break;
-    }
-    switch (answer.trim()) {
-      case '1':
-        await handleAddSite(settings);
-        break;
-      case '2':
-        await handleEditSite(settings);
-        break;
-      case '3':
-        await handleRemoveSite(settings);
-        break;
-      case '4':
-        await handleSetDefaultSite(settings);
-        break;
-      case '5':
-        settings.publishByDefault = !settings.publishByDefault;
-        safeNotice(context, `默认发布已切换为：${settings.publishByDefault ? '发布' : '草稿'}`, 'ok');
-        break;
-      default:
-        safeNotice(context, '无效的选项', 'err');
-        break;
-    }
-  }
-}
-
-async function handleAddSite(settings) {
-  const name = prompt('请输入站点名称（可选）：', '') || '';
-  const urlInput = prompt('请输入 Halo 站点地址（例如 https://example.com ）：', '');
-  if (!urlInput) return;
-  const url = normalizeSiteUrl(urlInput);
-  if (!url) {
-    alert('站点地址无效');
-    return;
-  }
-  const token = prompt('请输入 Halo Personal Access Token：', '');
-  if (!token) {
-    alert('Token 不能为空');
-    return;
-  }
-  const site = {
-    id: randomUUID(),
-    name: name.trim(),
-    url,
-    token: token.trim(),
-    default: settings.sites.length === 0
-  };
-  settings.sites.push(site);
-}
-
-async function handleEditSite(settings) {
-  if (!settings.sites.length) {
-    alert('暂无站点可编辑');
-    return;
-  }
-  const index = promptSiteIndex(settings, '请输入要编辑的站点编号：');
-  if (index === null) return;
-  const site = settings.sites[index];
-  const name = prompt('站点名称：', site.name) ?? site.name;
-  const urlInput = prompt('站点地址：', site.url) ?? site.url;
-  const url = normalizeSiteUrl(urlInput);
-  if (!url) {
-    alert('站点地址无效');
-    return;
-  }
-  const token = prompt('访问 Token：', site.token) ?? site.token;
-  site.name = name.trim();
-  site.url = url;
-  site.token = token.trim();
-}
-
-async function handleRemoveSite(settings) {
-  if (!settings.sites.length) {
-    alert('暂无站点可删除');
-    return;
-  }
-  const index = promptSiteIndex(settings, '请输入要删除的站点编号：');
-  if (index === null) return;
-  if (!confirm('确定删除该站点吗？')) return;
-  const removed = settings.sites.splice(index, 1);
-  if (removed[0]?.default && settings.sites.length) {
-    settings.sites[0].default = true;
-  }
-}
-
-async function handleSetDefaultSite(settings) {
-  if (!settings.sites.length) {
-    alert('请先添加站点');
-    return;
-  }
-  const index = promptSiteIndex(settings, '请选择新的默认站点编号：');
-  if (index === null) return;
-  settings.sites.forEach((site, idx) => {
-    site.default = idx === index;
-  });
-}
-
-function promptSiteIndex(settings, message) {
-  const list = settings.sites.map((site, index) => `${index + 1}. ${site.name || site.url}${site.default ? '（默认）' : ''}`).join('\n');
-  const answer = prompt(`${message}\n\n${list}`, '1');
-  if (answer === null) return null;
-  const idx = Number(answer) - 1;
-  if (Number.isNaN(idx) || idx < 0 || idx >= settings.sites.length) {
-    alert('无效的编号');
-    return null;
-  }
-  return idx;
-}
-
-function formatSettingsSummary(settings) {
-  if (!settings.sites.length) {
-    return '当前尚未配置任何 Halo 站点。';
-  }
-  return settings.sites
-    .map((site, index) => {
-      const prefix = `${index + 1}. ${site.name || site.url}`;
-      const suffix = site.default ? '（默认）' : '';
-      return `${prefix} ${suffix}\n    ${site.url}`;
-    })
-    .join('\n');
-}
 
 async function promptSiteSelection(settings, message) {
   const list = settings.sites.map((site, index) => `${index + 1}. ${site.name || site.url}${site.default ? '（默认）' : ''}`).join('\n');
@@ -480,6 +356,452 @@ function normalizeSiteUrl(input) {
   } catch {
     return '';
   }
+}
+
+async function showSettingsModal(settings) {
+  if (typeof document === 'undefined') {
+    alert('当前环境不支持图形化配置，请在桌面应用中使用该功能。');
+    return null;
+  }
+
+  return await new Promise((resolve) => {
+    ensureSettingsStyles();
+    const working = {
+      publishByDefault: !!settings.publishByDefault,
+      sites: Array.isArray(settings.sites)
+        ? settings.sites.map((site) => ({
+            id: site.id || randomUUID(),
+            name: site.name || '',
+            url: site.url || '',
+            token: site.token || '',
+            default: Boolean(site.default)
+          }))
+        : []
+    };
+
+    if (!working.sites.length) {
+      working.sites.push({
+        id: randomUUID(),
+        name: '',
+        url: '',
+        token: '',
+        default: true
+      });
+    } else if (!working.sites.some((site) => site.default)) {
+      working.sites[0].default = true;
+    }
+
+    let workingSites = working.sites;
+
+    const overlay = document.createElement('div');
+    overlay.className = 'flymd-halo-settings-overlay';
+
+    const panel = document.createElement('div');
+    panel.className = 'flymd-halo-settings-panel';
+    overlay.appendChild(panel);
+
+    const header = document.createElement('div');
+    header.className = 'halo-settings-header';
+    const title = document.createElement('h2');
+    title.textContent = 'Halo 站点配置';
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'halo-close-btn';
+    closeBtn.textContent = 'X';
+    header.appendChild(title);
+    header.appendChild(closeBtn);
+    panel.appendChild(header);
+
+    const hint = document.createElement('p');
+    hint.className = 'halo-settings-hint';
+    hint.textContent = '为 Flymd 配置可用的 Halo 站点与 Personal Access Token，可设置默认的发布目标。';
+    panel.appendChild(hint);
+
+    const publishRow = document.createElement('label');
+    publishRow.className = 'halo-toggle';
+    const publishCheckbox = document.createElement('input');
+    publishCheckbox.type = 'checkbox';
+    publishCheckbox.checked = working.publishByDefault;
+    publishCheckbox.addEventListener('change', () => {
+      working.publishByDefault = publishCheckbox.checked;
+    });
+    const publishText = document.createElement('span');
+    publishText.textContent = '发布后默认设置为“已发布”状态';
+    publishRow.appendChild(publishCheckbox);
+    publishRow.appendChild(publishText);
+    panel.appendChild(publishRow);
+
+    const publishDesc = document.createElement('p');
+    publishDesc.className = 'halo-settings-subtle';
+    publishDesc.textContent = '关闭后将默认保留为草稿，可在 Front Matter 中通过 halo.publish 覆盖。';
+    panel.appendChild(publishDesc);
+
+    const list = document.createElement('div');
+    list.className = 'halo-site-list';
+    panel.appendChild(list);
+
+    const addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.className = 'halo-btn ghost';
+    addBtn.textContent = '新增站点';
+    addBtn.addEventListener('click', () => {
+      workingSites.push({
+        id: randomUUID(),
+        name: '',
+        url: '',
+        token: '',
+        default: workingSites.length === 0
+      });
+      if (workingSites.length === 1) {
+        workingSites[0].default = true;
+      }
+      refreshSites();
+    });
+    panel.appendChild(addBtn);
+
+    const footer = document.createElement('div');
+    footer.className = 'halo-settings-footer';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'halo-btn ghost';
+    cancelBtn.textContent = '取消';
+    const saveBtn = document.createElement('button');
+    saveBtn.type = 'button';
+    saveBtn.className = 'halo-btn primary';
+    saveBtn.textContent = '保存';
+    footer.appendChild(cancelBtn);
+    footer.appendChild(saveBtn);
+    panel.appendChild(footer);
+
+    const keyHandler = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        close(null);
+      }
+    };
+
+    document.addEventListener('keydown', keyHandler);
+
+    let closed = false;
+
+    function close(result) {
+      if (closed) return;
+      closed = true;
+      document.removeEventListener('keydown', keyHandler);
+      if (overlay.parentElement) {
+        overlay.parentElement.removeChild(overlay);
+      }
+      resolve(result);
+    }
+
+    closeBtn.addEventListener('click', () => close(null));
+    cancelBtn.addEventListener('click', () => close(null));
+    overlay.addEventListener('click', (event) => {
+      if (event.target === overlay) {
+        close(null);
+      }
+    });
+
+    saveBtn.addEventListener('click', () => {
+      const normalizedSites = [];
+      for (const site of workingSites) {
+        const normalizedSite = normalizeSite(site);
+        if (!normalizedSite) {
+          alert('请为每个站点填写有效的地址和 Token。');
+          return;
+        }
+        normalizedSites.push(normalizedSite);
+      }
+      if (!normalizedSites.length) {
+        alert('至少需要配置一个站点。');
+        return;
+      }
+      if (!normalizedSites.some((site) => site.default)) {
+        normalizedSites[0].default = true;
+      }
+      close({
+        publishByDefault: !!working.publishByDefault,
+        sites: normalizedSites
+      });
+    });
+
+    function refreshSites() {
+      list.innerHTML = '';
+      if (!workingSites.length) {
+        const empty = document.createElement('div');
+        empty.className = 'halo-empty';
+        empty.textContent = '尚未添加站点，点击“新增站点”开始配置。';
+        list.appendChild(empty);
+        return;
+      }
+      workingSites.forEach((site) => {
+        list.appendChild(createSiteCard(site));
+      });
+    }
+
+    function createSiteCard(site) {
+      const card = document.createElement('div');
+      card.className = 'halo-site-item';
+      card.dataset.siteId = site.id;
+
+      const nameField = document.createElement('label');
+      nameField.className = 'halo-field';
+      const nameSpan = document.createElement('span');
+      nameSpan.textContent = '站点名称';
+      const nameInput = document.createElement('input');
+      nameInput.type = 'text';
+      nameInput.placeholder = '可选，例如：个人博客';
+      nameInput.value = site.name || '';
+      nameInput.addEventListener('input', () => {
+        site.name = nameInput.value;
+      });
+      nameField.appendChild(nameSpan);
+      nameField.appendChild(nameInput);
+
+      const urlField = document.createElement('label');
+      urlField.className = 'halo-field';
+      const urlSpan = document.createElement('span');
+      urlSpan.textContent = '站点地址';
+      const urlInput = document.createElement('input');
+      urlInput.type = 'text';
+      urlInput.placeholder = 'https://example.com';
+      urlInput.value = site.url || '';
+      urlInput.addEventListener('input', () => {
+        site.url = urlInput.value;
+      });
+      urlField.appendChild(urlSpan);
+      urlField.appendChild(urlInput);
+
+      const tokenField = document.createElement('label');
+      tokenField.className = 'halo-field';
+      const tokenSpan = document.createElement('span');
+      tokenSpan.textContent = 'Personal Access Token';
+      const tokenInput = document.createElement('input');
+      tokenInput.type = 'text';
+      tokenInput.placeholder = '需要 Post Manage 权限';
+      tokenInput.autocomplete = 'off';
+      tokenInput.value = site.token || '';
+      tokenInput.addEventListener('input', () => {
+        site.token = tokenInput.value;
+      });
+      tokenField.appendChild(tokenSpan);
+      tokenField.appendChild(tokenInput);
+
+      const actionRow = document.createElement('div');
+      actionRow.className = 'halo-site-actions';
+      const defaultLabel = document.createElement('label');
+      defaultLabel.className = 'halo-radio';
+      const defaultInput = document.createElement('input');
+      defaultInput.type = 'radio';
+      defaultInput.name = 'halo-site-default';
+      defaultInput.value = site.id;
+      defaultInput.checked = !!site.default;
+      defaultInput.addEventListener('change', () => {
+        if (!defaultInput.checked) return;
+        workingSites.forEach((record) => {
+          record.default = record.id === site.id;
+        });
+        list.querySelectorAll('input[name="halo-site-default"]').forEach((radio) => {
+          radio.checked = radio.value === site.id;
+        });
+      });
+      const defaultText = document.createElement('span');
+      defaultText.textContent = '设为默认发布站点';
+      defaultLabel.appendChild(defaultInput);
+      defaultLabel.appendChild(defaultText);
+
+      const removeBtn = document.createElement('button');
+      removeBtn.type = 'button';
+      removeBtn.className = 'halo-site-remove';
+      removeBtn.textContent = '删除';
+      removeBtn.addEventListener('click', () => {
+        if (workingSites.length === 1 && !confirm('这是唯一的站点，删除后需要重新添加，确定继续？')) {
+          return;
+        }
+        workingSites = workingSites.filter((record) => record.id !== site.id);
+        if (workingSites.length && !workingSites.some((record) => record.default)) {
+          workingSites[0].default = true;
+        }
+        refreshSites();
+      });
+
+      actionRow.appendChild(defaultLabel);
+      actionRow.appendChild(removeBtn);
+
+      card.appendChild(nameField);
+      card.appendChild(urlField);
+      card.appendChild(tokenField);
+      card.appendChild(actionRow);
+
+      return card;
+    }
+
+    document.body.appendChild(overlay);
+    refreshSites();
+  });
+}
+
+function ensureSettingsStyles() {
+  if (typeof document === 'undefined') return;
+  if (document.getElementById('flymd-halo-settings-style')) return;
+  const style = document.createElement('style');
+  style.id = 'flymd-halo-settings-style';
+  style.textContent = `
+    .flymd-halo-settings-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.55);
+      z-index: 9999;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      backdrop-filter: blur(2px);
+    }
+    .flymd-halo-settings-panel {
+      width: min(780px, 94vw);
+      max-height: 90vh;
+      background: var(--halo-panel-bg, var(--color-surface, #ffffff));
+      color: var(--halo-panel-fg, var(--color-text, #111));
+      border-radius: 18px;
+      box-shadow: 0 30px 80px rgba(2, 6, 23, 0.35);
+      padding: 24px 28px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      overflow: hidden;
+    }
+    .halo-settings-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .halo-settings-header h2 {
+      margin: 0;
+      font-size: 20px;
+      font-weight: 600;
+    }
+    .halo-close-btn {
+      border: none;
+      background: transparent;
+      font-size: 24px;
+      cursor: pointer;
+      line-height: 1;
+      color: inherit;
+    }
+    .halo-settings-hint {
+      margin: 0;
+      color: rgba(15, 23, 42, 0.7);
+      font-size: 14px;
+    }
+    .halo-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 500;
+      cursor: pointer;
+      user-select: none;
+    }
+    .halo-toggle input {
+      width: 18px;
+      height: 18px;
+    }
+    .halo-settings-subtle {
+      margin: 0;
+      color: rgba(15, 23, 42, 0.5);
+      font-size: 12px;
+    }
+    .halo-site-list {
+      flex: 1;
+      overflow: auto;
+      padding-right: 4px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .halo-site-item {
+      border: 1px solid rgba(15, 23, 42, 0.12);
+      border-radius: 12px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      background: rgba(249, 250, 251, 0.8);
+    }
+    .halo-field {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      font-size: 13px;
+    }
+    .halo-field span {
+      color: rgba(15, 23, 42, 0.72);
+      font-weight: 500;
+    }
+    .halo-field input {
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid rgba(15, 23, 42, 0.18);
+      background: rgba(255, 255, 255, 0.9);
+      font-size: 13px;
+    }
+    .halo-site-actions {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .halo-radio {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .halo-site-remove {
+      border: none;
+      background: rgba(239, 68, 68, 0.12);
+      color: #b91c1c;
+      border-radius: 8px;
+      padding: 6px 12px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .halo-btn {
+      border-radius: 8px;
+      padding: 8px 16px;
+      font-size: 14px;
+      border: none;
+      cursor: pointer;
+    }
+    .halo-btn.ghost {
+      background: rgba(15, 23, 42, 0.05);
+      color: inherit;
+    }
+    .halo-btn.primary {
+      background: #2563eb;
+      color: #fff;
+      font-weight: 600;
+    }
+    .halo-settings-footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 12px;
+      margin-top: 8px;
+    }
+    .halo-empty {
+      padding: 32px;
+      text-align: center;
+      border: 1px dashed rgba(15, 23, 42, 0.3);
+      border-radius: 12px;
+      color: rgba(15, 23, 42, 0.6);
+      font-size: 14px;
+    }
+  `;
+  document.head.appendChild(style);
 }
 
 function createHaloClient(context, site) {
